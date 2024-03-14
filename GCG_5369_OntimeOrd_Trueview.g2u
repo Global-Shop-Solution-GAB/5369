@@ -1,0 +1,155 @@
+Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'This project was created by FEQ on 11/14/2018. 
+'Created for Cedinor. This is a trueview that shows all open work orders and other information for each, such as:
+'Sales Order number, Customer PO, Customer Number, Part Number, Part Description, Quantity, WO Due Date, Days until delivery (Today - WO Due Date), On time (sched due date vs wo due date), Current Work Center
+'Bulk of information is gathered from JOB_HEADER while a handful of fields are gathered from APSV3_JBLINES
+
+F.Intrinsic.Control.Try
+V.Local.sError.Declare(String, "")
+
+F.ODBC.Connection!conx.OpenCompanyConnection
+
+F.Intrinsic.Control.CallSub(GatherInformation)
+F.Intrinsic.Control.CallSub(CreateHTML)
+
+F.ODBC.Connection!conx.Close
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End 
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.GatherInformation.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare(String, "")
+V.Local.iCount.Declare(Long, 0)
+V.Local.iDaysTill.Declare(Long, 0)
+V.Local.iOtherDays.Declare(Long, 0)
+V.Local.iTimeCheck.Declare(Long, 0)
+V.Local.sOnTime.Declare(String, "")
+V.Local.sCurrOp.Declare(String, "")
+V.Local.dDateDue.Declare(Date, "01/01/1900")
+V.Local.dDateSched.Declare(Date, "01/01/1900")
+V.Local.sSql.Declare(String, "")
+
+F.Data.DataTable.CreateFromSQL("dtBase", "conx", "Select Sales_order, Sales_Order_Line, Customer_PO, Customer, Part, Description, Qty_Order, Date_Due, Scheduled_Due_Date, Job, Suffix From V_JOB_HEADER where DATE_CLOSED = '1900-01-01'", True)
+
+F.Data.DataTable.AddColumn("dtBase", "DaysTill", "Long")
+F.Data.DataTable.AddColumn("dtBase", "OnTime", "String")
+F.Data.DataTable.AddColumn("dtBase", "CurrOP", "String")
+
+F.Intrinsic.Control.For(V.Local.iCount, 0, V.DataTable.dtBase.RowCount--, 1)
+
+	'Calculate the days until completion (Work Order Due Date - Today (Number))
+	V.Local.dDateDue.Set(V.DataTable.dtBase(V.Local.iCount).Date_Due!FieldValPervasiveDate)
+	F.Intrinsic.Date.DateDiff("d", V.Local.dDateDue, V.Ambient.Date, V.Local.iDaysTill)
+	F.Intrinsic.Date.DateDiff("d", V.Ambient.Date, V.Local.dDateDue, V.Local.iOtherDays)
+	
+	'Calculate if the work order will be on time (If WO Due Date than scheduled due date, 'Y' otherwise 'N')
+	V.Local.dDateSched.Set(V.DataTable.dtBase(V.Local.iCount).Scheduled_Due_Date!FieldValPervasiveDate)
+	F.Intrinsic.Date.DateDiff("d", V.Local.dDateDue, V.Local.dDateSched, V.Local.iTimeCheck)
+	F.Intrinsic.Control.If(V.Local.iTimeCheck, <, 0)
+		V.Local.sOnTime.Set("N")
+	F.Intrinsic.Control.Else
+		V.Local.sOnTime.Set("Y")
+	F.Intrinsic.Control.EndIf
+	
+	'Calculate the Current Work Center. This logic was copied from a Dashboard (GAB_4291_MasterSched_GM) ***********************************************************************************************************************************************
+	V.Local.sCurrOp.Set("")
+	F.Intrinsic.String.Build("SELECT TOP 2 JOB, SFX, SEQ, SEQTYPE, SEQRES FROM APSV3_JBLINES WHERE COMPLDATE IS NULL AND SEQTYPE <> '2' AND JOB = '{0}' AND SFX = '{1}' ORDER BY JOB, SFX, SEQ", V.DataTable.dtBase(V.Local.iCount).JOB!FieldVal, V.DataTable.dtBase(V.Local.iCount).SUFFIX!FieldVal, V.Local.sSQL)
+	F.ODBC.Connection!conx.OpenLocalRecordsetRO("rstInfo",V.Local.sSQL)
+	F.Intrinsic.Control.If(V.ODBC.conx!rstInfo.EOF,=,True)
+		V.Local.sCurrOp.Set("WIPTOFG")
+		
+	F.Intrinsic.Control.Else
+		F.Intrinsic.Control.DoUntil(V.ODBC.conx!rstInfo.EOF,=,True)
+			F.Intrinsic.Control.SelectCase(V.ODBC.conx!rstInfo.FieldValTrim!SEQTYPE)
+				F.Intrinsic.Control.Case(1)
+					F.Intrinsic.Control.If(V.Local.sCurrOp,=,"")
+						V.Local.sCurrOp.Set(V.ODBC.conx!rstInfo.FieldValTrim!SEQRES)
+						
+					F.Intrinsic.Control.EndIf
+				F.Intrinsic.Control.Case(3)
+					F.Intrinsic.Control.If(V.Local.sCurrOp,=,"")
+						V.Local.sCurrOp.Set("OUTSIDE")
+
+					F.Intrinsic.Control.EndIf
+			F.Intrinsic.Control.EndSelect
+		F.ODBC.conx!rstInfo.MoveNext
+		F.Intrinsic.Control.Loop
+	F.Intrinsic.Control.EndIf
+	F.ODBC.conx!rstInfo.Close
+	
+	F.Data.DataTable.SetValue("dtBase", V.Local.iCount, "DaysTill", V.Local.iOtherDays, "OnTime", V.Local.sOnTime, "CurrOP", V.Local.sCurrOp)
+	'*******************************************************************************************************************************************************************************************************************************************************
+	
+F.Intrinsic.Control.Next(V.Local.iCount)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End 
+F.Intrinsic.Control.EndTry
+Program.Sub.GatherInformation.End
+
+Program.Sub.CreateHTML.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare(String, "")
+V.Local.sTable.Declare(String, "")
+V.Local.sFile.Declare(String, "")
+V.Local.sHTML.Declare(String, "")
+V.Local.sTemp.Declare(String, "")
+
+'We pull the HTML Template and replace it with the table
+F.Data.DataTable.AddExpressionColumn("dtBase", "OrdLine", "String", "[Sales_Order]+'-'+[Sales_Order_Line]")
+F.Data.DataTable.ExportHTML("dtBase", "OrdLine*!*Customer_PO*!*Customer*!*Part*!*Description*!*Qty_Order*!*Date_Due*!*DaysTill*!*OnTime*!*CurrOp", "", "", True, V.Local.sTable)
+
+'FEQ the following was copied from a previous Trueview to set up the table as most truevies are used I suppose
+'find and replace <table> tag with the below table tag with attributes
+'<!--<table class="TFtable" border="0"><tbody>-->
+F.Intrinsic.String.Replace(V.Local.sTable,"<table>","<table class="TFtable" border="0"><tbody>",V.Local.sTable)
+F.Intrinsic.String.Replace(V.Local.sTable,"</table>","</tbody></table>",V.Local.sTable)
+
+'find <td><td with <td 
+f.Intrinsic.String.Replace(v.Local.sTable,"<td><td ","<td ",v.Local.sTable)
+
+'find <td> and replace with <td class="data-cell">
+F.Intrinsic.String.Build("<td class={0}data-cell{0}>",V.Ambient.DblQuote,V.Local.sTemp)
+F.Intrinsic.String.Replace(V.Local.sTable,"<td>",V.Local.sTemp,V.Local.sTable)
+
+'left and right cells on each row<td>&nbsp;</td>
+F.Intrinsic.String.Replace(V.Local.sTable,"<tr>","<tr><td class="Empty">&nbsp;</td>",V.Local.sTable)
+
+F.Intrinsic.String.Replace(V.Local.sTable,"</tr>","<td class="Last">&nbsp;</td></tr>",V.Local.sTable)
+
+
+F.Intrinsic.String.Build("{0}\TrueView\5369\GCG_5369_OnTime_TEMPLATE.html",V.Caller.GlobalDir,V.Local.sFile)
+'F.Intrinsic.String.Build("{0}\GCG_5369_OnTime_TEMPLATE.html",V.Caller.GasDir,V.Local.sFile)
+
+'load template
+F.Intrinsic.File.File2String(V.Local.sFile,V.Local.sHTML)
+
+'replace wildcard from template with html table(v.local.sRet)
+F.Intrinsic.String.Replace(V.Local.sHTML,"#table",V.Local.sTable,V.Local.sHTML)
+
+F.Intrinsic.String.Build("{0}\TrueView\5369\GCG_5369_OnTime.html",V.Caller.GlobalDir,V.Local.sFile)
+'F.Intrinsic.String.Build("{0}\GCG_5369_OnTime.html",V.Caller.GasDir,V.Local.sFile)
+
+F.Intrinsic.File.String2File(V.Local.sFile, V.Local.sHTML)
+
+'If the user decides to set it up on the task scheduler, we may need to change the fact that it opens when the script is executed.
+F.Intrinsic.Control.If(V.Caller.Switches, =, "O")
+	F.Intrinsic.Task.ShellExec(V.Caller.Handle,"OPEN",V.Local.sFile,"","",1)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End 
+F.Intrinsic.Control.EndTry
+Program.Sub.CreateHTML.End
